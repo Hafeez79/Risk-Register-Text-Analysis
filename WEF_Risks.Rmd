@@ -1,0 +1,382 @@
+---
+title: "WEF Risk Register Text Analysis"
+author: "Hafeez Shaikh"
+date: "December 5, 2018"
+output:
+  html_document: default
+  pdf_document: default
+params:
+  kBigramLimit: 0.00918
+  kReportName: World Economic Forum
+  kSkipRows: 0
+  kTopics: 9
+  kTrigramLimit: 0.00923
+  riskDescription: Risk_Description
+  riskID: ID
+  riskName: Risk_Name
+  theme: Theme
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# install.packages("rmarkdown", "dplyr","tidyr","tidytext","wordcloud","ggplot2","tidyverse","igraph","ggraph",
+#  "widyr","topicmodels","devtools","htmlwidgets")
+#  install_github("cbail/textnets")
+
+```
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# LOAD REQUIRED LIBRARIES
+
+library(knitr)
+library(rmarkdown)
+library(dplyr)
+library(tidyr)
+library(tidytext)
+library(wordcloud)
+library(ggplot2)
+library(tidyverse)
+library(igraph)
+library(ggraph)
+library(stringr)
+library(widyr)
+library(topicmodels)
+library(SnowballC)
+library(textnets)
+library(devtools)
+library(reshape2)
+# library(phrasemachine)
+# library(networkD3)
+library(htmlwidgets)
+# library(lazyeval)
+# library(textstem)
+
+# Load stop words
+
+data(stop_words)
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# Two separate data files are required in csv format
+# (1) A file containing frequently occuring words of low value which should be removed from some of the analysis
+# (2) A file containing risk data  
+#     (a) Risk IDs
+#     (b) Risk names
+#     (c) Risk THEMES (e.g. departments, business areas, categories)
+#     (d) Risk Description
+# Read low value words (ignore words) from CSV file. Convert to strings in case there are any numbers.  
+
+ignore_words <- read.csv("ignore_Words.csv")
+ignore_words$igword <- as.character(ignore_words$igword)
+
+# Bind ignore_words and stop_words in a single data frame.
+
+stop_n_ignore <- bind_rows(stop_words, ignore_words)
+
+# Load all risk data
+
+all_data <- read.csv("WEF_2018_Risks.csv", skip=params$kSkipRows)
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Get column index numbers of key columns in the data frame.
+
+i_risk_id <- which(colnames(all_data)==params$riskID)
+i_risk_name <- which(colnames(all_data)==params$riskName)
+i_theme <- which(colnames(all_data)==params$theme)
+
+
+# Convert the risk group column header to "Category".
+
+colnames(all_data)[i_theme] <- "Category"
+
+
+# Count number of risks by business area in a separate data frame
+
+x.risks.count <- all_data %>% 
+  count(Category, sort=TRUE) 
+colnames(x.risks.count)[2] <- "numrisks"
+
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Gather and tokenize data into words for analysis (word cloud, sentiment analysis, TF_IDF). Remove digits.
+
+x.tokenized.data <- all_data %>% 
+  gather(fields, alldata, params$riskName:params$riskDescription) %>% 
+  unnest_tokens(word, alldata) %>% 
+  anti_join(stop_n_ignore) %>%
+  filter(!str_detect(word, "\\d"))
+
+
+# Gather and tokenize data into bigrams for analysis (network chart). Calculate TF_IDF values of bigrams.
+
+x.bigrams <- all_data %>% 
+  gather(fields, alldata, params$riskName:params$riskDescription) %>% 
+  unnest_tokens(bigrams,alldata,token = "ngrams", n=2) %>% 
+  count(bigrams, Category, sort=TRUE) %>%
+  bind_tf_idf(bigrams, Category, n) %>%
+  arrange(desc(tf_idf)) 
+
+
+# Gather and tokenize data into trigrams for analysis (network chart). Calculate TF_IDF values of trigrams.
+
+x.trigrams <- all_data %>% 
+  gather(fields, alldata, params$riskName:params$riskDescription) %>% 
+  unnest_tokens(trigrams, alldata, token = "ngrams", n=3) %>% 
+  count(trigrams, Category, sort=TRUE) %>% 
+  bind_tf_idf(trigrams,Category, n) %>% 
+  arrange(desc(tf_idf))
+```
+
+
+## Introduction  
+  
+  
+
+This report presents text analysis of the `r params$kReportName` risk register. The charts and graphs in this report highlight key themes and interactions which may not otherwise be apparent in a voluminous register containing hundreds or even thousands of risks.    
+  
+  
+## Word cloud  
+  
+  
+The following image presents a word cloud of the most frequently occuring words in the risk related text in the entire register. Stop words and certain frequently occuring words (provided by user) are excluded.  
+  
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# WORD CLOUD FOR THE RISK DATA
+
+x.cloud.data <- x.tokenized.data %>% 
+  count(word, sort = TRUE) %>%
+  with(wordcloud(word, n, max.words=30, scale=c(3.5, .4), colors="NavyBlue" ))
+```
+  
+
+## Sentiment Analysis  
+  
+  
+The following chart shows sentiment score per risk for each `r params$theme`. Since number of risks can vary significantly from `r params$theme` to `r params$theme`, average score per risk is shown below. Afinn lexicon is used to assign sentiment score.   
+  
+A `r params$theme` with a large negative sentiment score may indicate a high intensity of concern in that `r params$theme`, but not necessarily a higher quantum of total concern.  
+  
+  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+x.sentiment.value <- x.tokenized.data %>%
+  count(word, Category, sort = TRUE) %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(Category) %>%
+  mutate(totalscore = n*score) %>% 
+  group_by(Category) %>% 
+  summarise(netscore=sum(totalscore)) %>% 
+  inner_join(x.risks.count, by="Category") %>% 
+  mutate(avgscore = netscore/numrisks) %>% 
+  arrange(avgscore)
+
+ggplot(x.sentiment.value, aes(Category, avgscore)) +
+  geom_bar(stat="identity", color = "NavyBlue") +
+  xlab(NULL) +
+  coord_flip()
+```
+ 
+## Key Words  
+  
+  
+Where as the word cloud highlighted top words based on simple frequency, the following chart presents top 20 words based on TF_IDF (Term Frequency - Invesrse Document Frequency) scores. For purpose of this analysis a `r params$Category` is considered a document.
+  
+TF_IDF = TF * IDF  
+  
+TF = Number of occurences of a word in a document / Total words in that document  
+  
+IDF = ln (total number of documents / Number of documents containing the word)  
+  
+A word's TF-IDF score (importance) is high if it appears in fewer documents, and yet has a high frequency within the documents that it does occur. Words that appears in most or all of the documents, being common, have lower TF-IDF scores. Similarly, words that appear in just one or two documents, and occur just once or a few times, have lower TF-IDF scores.     
+  
+  
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# TOP WORDS BASED ON TF_IDF VALUE BY RISK GROUP
+
+x.tfidf <- x.tokenized.data %>%
+  count(word, Category, sort = TRUE) %>% 
+  bind_tf_idf(word, Category, n) %>% 
+  arrange(desc(tf_idf)) %>% 
+  ungroup() 
+
+x.chart.tfidf <- x.tfidf %>% 
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) 
+
+x.chart.tfidf %>% 
+  top_n(20) %>% 
+  ggplot(aes(word, tf_idf, fill=Category)) +
+  geom_bar(stat="identity") +
+  labs(y = NULL, x = "tf-idf") +
+  coord_flip() 
+```
+
+
+## Bigrams Analysis  
+  
+
+This chart highlights relationship between key words. The keywords are those that have the highest importance based on tf-idf scores. Stop words and frequently occuring words, however, have been retained so as to not lose the context.   
+  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Remove stop words for bigrams network chart, since a large number of bigrams is likely to contain stop words.insta
+
+x.chart.bigrams <- x.bigrams %>% 
+  filter(tf_idf>=params$kBigramLimit) %>% 
+  separate(bigrams, c("word1", "word2"), sep = " ") %>%
+  # filter(!word1 %in% x.stop.and.freq$word,
+  #        !word2 %in% x.stop.and.freq$word) %>% 
+  graph_from_data_frame()
+
+set.seed(112)
+
+a <- grid::arrow(type = "closed", length = unit(.1, "inches"))
+
+
+
+
+ggraph(x.chart.bigrams, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.05, 'inches')) +
+  geom_node_point(color = "lightblue", size = 3) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+```
+
+
+## Trigrams Analysis  
+  
+  
+
+A trigram network chart is presented as it may highlight stories not captured by bigrams chart. Stop words have not been removed for this analysis. Top trigrams have been selected based on TF-IDF values.
+  
+  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Stop words are retained in the trigrams chart because they would help tell a story.
+
+x.chart.trigrams <- x.trigrams %>% 
+  filter(tf_idf>=params$kTrigramLimit) %>% 
+  separate(trigrams, c("word1", "word2", "word3"), sep = " ") %>%
+  graph_from_data_frame()
+
+set.seed(113)
+
+a <- grid::arrow(type = "closed", length = unit(.1, "inches"))
+
+ggraph(x.chart.trigrams, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.05, 'inches')) +
+  geom_node_point(color = "lightblue", size = 3) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+```
+
+
+## Topic Discovery  
+  
+  
+
+Latent Dirichlet Allocation model is used to divide risk text into `r params$kTopics` topics. The following chart presents top words based on beta values (per topic per word probabilities).  
+  
+  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+x.lda.data <- unite(all_data, merged, params$riskName:params$riskDescription, sep = " ") %>% 
+  unnest_tokens(word, merged) %>% 
+  anti_join(stop_n_ignore) %>% 
+  count(params$riskID, word) %>% 
+  cast_dtm(params$riskID, word, n) 
+
+x.lda <- LDA(x.lda.data, k=params$kTopics, control = list(seed=121))
+
+library(tidytext)
+
+x.risk.topics <- tidytext::tidy(x.lda, matrix = "beta")
+
+x.topic.words <- x.risk.topics %>% 
+  group_by(topic) %>% 
+  top_n(8, beta) %>% 
+  ungroup() %>% 
+  arrange(topic, -beta)
+
+x.topic.words %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+
+
+## Risks Interdependencies  
+  
+  
+
+The following chart shows risk network chart based on text content. Each rik is treated as separate document. This allows for Risk-Risk linkages to be displayed. Risks are prefixed ID numbers. Risk titles have been truncated to avoid clutter. The chart has been generated after stemming words and removing stop words and numbers.  
+   
+   
+See the [Textnets](https://github.com/cbail/textnets) package on Github for more information.
+
+  
+  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# CREATE TEXTNETS TO VISUALIZE CONNECTION BETWEEN RISKS AND ACTIONS
+# Risk names are prefixed with 'R-' and risk ID
+# ACtion names are prefixed with 'A-' and action ID
+# Risk and action names are truncated to 60 characters to reduce cluter
+
+x.textnet.risk <- unite(all_data, title, c(params$riskID, params$riskName), sep = " - ") 
+x.textnet.risk$title <- strtrim(x.textnet.risk$title, 50)
+
+x.textnet.data <- PrepText(x.textnet.risk, groupvar = "title", textvar = "Risk_Description", node_type = "groups", remove_stop_words=TRUE, remove_numbers = TRUE)
+  
+x.textnetwork <- CreateTextnet(x.textnet.data)
+
+VisTextNet(x.textnetwork, label_degree_cut=4, alpha=0.5)
+```
+
+   
+   
+## Interactive Linkages Chart
+  
+  
+An interactive chart displaying linkages between risks and actions is available in html format.
+   
+     
+     
+     
+
+
+```{r eval=FALSE, include=FALSE}
+risk.widget <- VisTextNetD3(x.textnetwork, 
+                      height=1000,
+                      width=1400,
+                      bound=TRUE,
+                      zoom=TRUE,
+                      charge=-50)
+saveWidget(risk.widget, "ERMtextnetWidget.html")
+
+risk.widget
+
+
+```
+
+
