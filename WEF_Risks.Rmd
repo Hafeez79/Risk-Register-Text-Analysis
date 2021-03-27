@@ -1,3 +1,5 @@
+# Credits: https://www.tidytextmining.com/
+
 ---
 title: "WEF Risk Register Text Analysis"
 author: "Hafeez Shaikh"
